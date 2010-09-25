@@ -39,7 +39,7 @@
     :number-of-qubits number-of-qubits
     :amplitudes (let [dim (math/expt 2 number-of-qubits)]
                   (vec (cons 1.0 (repeat (dec dim) 0.0))))
-    :prior-probability 0
+    :prior-probability 1.0
     :oracle-count 0
     :instruction-history []
     :program pgm
@@ -91,8 +91,8 @@
 (defn set-addressed-amplitude 
   "Sets the amplitude currently addressed to new-value"
   [qsys new-value]
-  (assoc qsys :amplitudes 
-    (assoc (qsys :amplitudes) (addressed-amplitude-index qsys) new-value)))
+  (update-in qsys [:amplitudes]
+    #(assoc % (addressed-amplitude-index qsys) new-value)))
 
 (defn extract-column
   "Returns a column from the amplitudes obtained by varying the listed qubits,
@@ -233,6 +233,7 @@
 ;; other quantum gates
 
 (def s (/ 1 (sqrt 2)))
+(def pi Math/PI)
 
 (defn qnot
   "Quantum NOT gate"
@@ -403,8 +404,8 @@
 (defn force-to
   "Collapses a quantum system to the provided measured-value for the
   provided qubit."
-  [measured-value qubit qsys]
-  (with-local-vars [qu (list qubit)]
+  [measured-value qubits qsys]
+  (with-local-vars [qu qubits]
     (map-qubit-combinations 
       qsys
       (fn [q]
@@ -426,13 +427,13 @@
   (if (or (nil? (qsys :program))
           (zero? (qsys :prior-probability)))
     (list qsys)
-    (let [instruction (first (qsys :program))
-          q (update-in qsys [:instruction-history] conj instruction)]
-      (if (= (first instruction) 'halt)
+    (let [instructions (qsys :program)
+          q (update-in qsys [:instruction-history] conj (first instructions))]
+      (if (= (ffirst instructions) 'halt)
         (list q)
-        (if (= (first instruction) 'measure)
+        (if (= (ffirst instructions) 'measure)
           ; it's a measurement so split state and return list of results
-          (let [measurement-qubit (second instruction)
+          (let [measurement-qubit (second (first instructions))
                 probabilities (qc-output-probabilities q (list measurement-qubit))]
             (list
               ;; 1 branch
@@ -445,14 +446,14 @@
                 (force-to 0 measurement-qubit
                   (-> q (assoc [:prior-probability] (first probabilities))
                         (update-in [:program] #(without-if-branch (rest %))))))))
-          (let [resulting-sys (apply (first instruction) (cons qsys (rest instruction)))]
-            (run-qsys (assoc resulting-sys :program (rest (resulting-sys :program))))))))))
+          (let [resulting-sys (apply (eval (ffirst instructions)) (concat (list q) (doall (rest (first instructions)))))]
+            (run-qsys (update-in resulting-sys [:program] rest))))))))
 
 (defn execute-quantum-program
   "Executes the provided quantum program with the specified number of qubits
   and the provided oracle truth table, returning a list of the resulting 
   quantum systems."
-  ([pgm num-qubits] (execute-quantum-program pgm num-qubits nil))
+  ([pgm num-qubits] (run-qsys (quantum-system num-qubits pgm)))
   ([pgm num-qubits oracle-tt]
     (run-qsys (quantum-system num-qubits
                               (map #(replace {'ORACLE-TT oracle-tt} %) pgm)))))
@@ -463,7 +464,6 @@
   max-expected-oracles, and average-expected-oracles."
   [pgm {:keys [num-qubits test-cases final-measurement-qubits threshold debug]
          :or {debug 2}}]
-  (println pgm)
   (let [stats-all
         (let [num-cases (count test-cases)
               stats
@@ -478,7 +478,7 @@
                                                   (second (first cases))))
                             expected-oracles (expected-oracles resulting-systems)]
                         (when (>= debug 2)
-                          (println "case: " c "  error: " raw-error))
+                          (println "case: " (first cases) "  error: " raw-error))
                         (if (empty? (rest cases))
                           {:misses misses :max-error max-error :total-error total-error :max-expected-oracles max-expected-oracles
                              :total-expected-oracles total-expected-oracles}
@@ -491,14 +491,13 @@
                             (+ total-expected-oracles expected-oracles)))))]
             (-> stats (assoc :average-error  (/ (stats :total-error) num-cases))
                       (assoc :average-expected-oracles (/ (stats :total-expected-oracles) num-cases))))]
-      (when (>= debug 1)
-        (println stats-all))
     stats-all))
 
 (defn test-herbs-grover
   []
   (test-quantum-program 
-   '((hadamard 2)
+    '( 
+     (hadamard 2)
      (hadamard 1)
      (u-theta 0 ,(/ pi 4))
      (oracle ORACLE-TT 2 1 0)
